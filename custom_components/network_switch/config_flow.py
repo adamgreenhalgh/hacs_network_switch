@@ -84,14 +84,11 @@ class NetworkSwitchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> NetworkSwitchOptionsFlow:
-        return NetworkSwitchOptionsFlow(config_entry)
+        return NetworkSwitchOptionsFlow()
 
 
 class NetworkSwitchOptionsFlow(config_entries.OptionsFlow):
     """Handle options for Network Switch."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -103,7 +100,7 @@ class NetworkSwitchOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Optional(
                     CONF_SCAN_INTERVAL,
-                    default=self._config_entry.options.get(
+                    default=self.config_entry.options.get(
                         CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                     ),
                 ): int,
