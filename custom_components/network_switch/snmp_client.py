@@ -1,22 +1,23 @@
 """SNMP client for Cisco 3560 switch management."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
-from pysnmp.hlapi.v3arch.sync import (
+from pysnmp.hlapi.asyncio import (
     CommunityData,
     ContextData,
-    Integer,
     ObjectIdentity,
     ObjectType,
-    OctetString,
     SnmpEngine,
+    Udp6TransportTarget,
     UdpTransportTarget,
-    bulkCmd,
+    bulkWalkCmd,
     getCmd,
     setCmd,
 )
+from pysnmp.proto.rfc1902 import Integer, OctetString
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,14 +64,14 @@ class CiscoSwitchSNMP:
         self._community = community
         self._port = port
         self._timeout = timeout
-        self._engine = SnmpEngine()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _transport(self) -> UdpTransportTarget:
-        return UdpTransportTarget(
+    def _transport(self) -> UdpTransportTarget | Udp6TransportTarget:
+        transport_target = Udp6TransportTarget if ":" in self._host else UdpTransportTarget
+        return transport_target(
             (self._host, self._port),
             timeout=self._timeout,
             retries=1,
@@ -81,61 +82,84 @@ class CiscoSwitchSNMP:
 
     def _get(self, *oids: str) -> list[tuple[str, Any]]:
         """Perform an SNMP GET for one or more OIDs."""
-        objects = [ObjectType(ObjectIdentity(oid)) for oid in oids]
-        error_indication, error_status, error_index, var_binds = next(
-            getCmd(
-                self._engine,
-                self._community_data(),
-                self._transport(),
-                ContextData(),
-                *objects,
-            )
-        )
-        if error_indication:
-            raise SNMPError(f"GET error: {error_indication}")
-        if error_status:
-            raise SNMPError(f"GET error status: {error_status.prettyPrint()}")
-        return [(str(vb[0]), vb[1]) for vb in var_binds]
+        async def _get_async() -> list[tuple[str, Any]]:
+            objects = [ObjectType(ObjectIdentity(oid)) for oid in oids]
+            engine = SnmpEngine()
+            try:
+                error_indication, error_status, error_index, var_binds = await getCmd(
+                    engine,
+                    self._community_data(),
+                    self._transport(),
+                    ContextData(),
+                    *objects,
+                )
+            finally:
+                engine.closeDispatcher()
+
+            if error_indication:
+                raise SNMPError(f"GET error: {error_indication}")
+            if error_status:
+                raise SNMPError(
+                    f"GET error at {error_index}: {error_status.prettyPrint()}"
+                )
+            return [(str(vb[0]), vb[1]) for vb in var_binds]
+
+        return asyncio.run(_get_async())
 
     def _bulk_walk(self, oid: str) -> list[tuple[str, Any]]:
         """Walk an OID subtree using BULK requests."""
-        results: list[tuple[str, Any]] = []
-        for error_indication, error_status, _, var_bind_table in bulkCmd(
-            self._engine,
-            self._community_data(),
-            self._transport(),
-            ContextData(),
-            0,
-            25,
-            ObjectType(ObjectIdentity(oid)),
-            lexicographicMode=False,
-        ):
-            if error_indication:
-                raise SNMPError(f"WALK error: {error_indication}")
-            if error_status:
-                raise SNMPError(f"WALK error status: {error_status.prettyPrint()}")
-            for var_bind in var_bind_table:
-                results.append((str(var_bind[0]), var_bind[1]))
-        return results
+        async def _bulk_walk_async() -> list[tuple[str, Any]]:
+            engine = SnmpEngine()
+            results: list[tuple[str, Any]] = []
+            try:
+                async for error_indication, error_status, error_index, var_binds in bulkWalkCmd(
+                    engine,
+                    self._community_data(),
+                    self._transport(),
+                    ContextData(),
+                    0,
+                    25,
+                    ObjectType(ObjectIdentity(oid)),
+                    lexicographicMode=False,
+                ):
+                    if error_indication:
+                        raise SNMPError(f"WALK error: {error_indication}")
+                    if error_status:
+                        raise SNMPError(
+                            f"WALK error at {error_index}: {error_status.prettyPrint()}"
+                        )
+                    results.extend((str(var_bind[0]), var_bind[1]) for var_bind in var_binds)
+            finally:
+                engine.closeDispatcher()
+
+            return results
+
+        return asyncio.run(_bulk_walk_async())
 
     def _set(self, *oid_value_pairs: tuple[str, Any]) -> None:
         """Perform an SNMP SET for one or more OID/value pairs."""
-        objects = [ObjectType(ObjectIdentity(oid), value) for oid, value in oid_value_pairs]
-        error_indication, error_status, error_index, _ = next(
-            setCmd(
-                self._engine,
-                self._community_data(),
-                self._transport(),
-                ContextData(),
-                *objects,
-            )
-        )
-        if error_indication:
-            raise SNMPError(f"SET error: {error_indication}")
-        if error_status:
-            raise SNMPError(
-                f"SET error at {error_index}: {error_status.prettyPrint()}"
-            )
+        async def _set_async() -> None:
+            objects = [ObjectType(ObjectIdentity(oid), value) for oid, value in oid_value_pairs]
+            engine = SnmpEngine()
+            try:
+                error_indication, error_status, error_index, _ = await setCmd(
+                    engine,
+                    self._community_data(),
+                    self._transport(),
+                    ContextData(),
+                    *objects,
+                )
+            finally:
+                engine.closeDispatcher()
+
+            if error_indication:
+                raise SNMPError(f"SET error: {error_indication}")
+            if error_status:
+                raise SNMPError(
+                    f"SET error at {error_index}: {error_status.prettyPrint()}"
+                )
+
+        asyncio.run(_set_async())
 
     # ------------------------------------------------------------------
     # Interface methods
