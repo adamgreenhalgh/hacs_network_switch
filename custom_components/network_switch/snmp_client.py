@@ -113,10 +113,10 @@ class CiscoSwitchSNMP:
             try:
                 family = (
                     await asyncio.get_running_loop().getaddrinfo(
-                    self._host,
-                    self._port,
-                    family=socket.AF_UNSPEC,
-                    type=socket.SOCK_DGRAM,
+                        self._host,
+                        self._port,
+                        family=socket.AF_UNSPEC,
+                        type=socket.SOCK_DGRAM,
                     )
                 )[0][0]
             except socket.gaierror as err:
