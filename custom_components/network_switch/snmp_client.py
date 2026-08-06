@@ -73,7 +73,7 @@ class CiscoSwitchSNMP:
     # ------------------------------------------------------------------
 
     async def _transport(self) -> UdpTransportTarget | Udp6TransportTarget:
-        transport_target = self._transport_target_class()
+        transport_target = await self._transport_target_class()
         try:
             if hasattr(transport_target, "create"):
                 try:
@@ -103,17 +103,21 @@ class CiscoSwitchSNMP:
     def _community_data(self) -> CommunityData:
         return CommunityData(self._community, mpModel=1)
 
-    def _transport_target_class(self) -> type[UdpTransportTarget] | type[Udp6TransportTarget]:
+    async def _transport_target_class(
+        self,
+    ) -> type[UdpTransportTarget] | type[Udp6TransportTarget]:
         """Return the best transport target class for the configured host."""
         try:
             address = ipaddress.ip_address(self._host)
         except ValueError:
             try:
-                family = socket.getaddrinfo(
+                family = (
+                    await asyncio.get_running_loop().getaddrinfo(
                     self._host,
                     self._port,
                     family=socket.AF_UNSPEC,
                     type=socket.SOCK_DGRAM,
+                    )
                 )[0][0]
             except socket.gaierror as err:
                 raise SNMPError(

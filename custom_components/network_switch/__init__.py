@@ -223,7 +223,7 @@ def _register_services(hass: HomeAssistant) -> None:
         await hass.async_add_executor_job(
             coordinator.client.create_vlan,
             call.data["vlan_id"],
-            call.data["name"] or f"VLAN{call.data['vlan_id']}",
+            call.data.get("name") or f"VLAN{call.data['vlan_id']}",
         )
         await coordinator.async_request_refresh()
 
