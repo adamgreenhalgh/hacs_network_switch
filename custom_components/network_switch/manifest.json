@@ -1,0 +1,12 @@
+{
+  "domain": "network_switch",
+  "name": "Network Switch",
+  "version": "1.0.0",
+  "documentation": "https://github.com/adamgreenhalgh/hacs_network_switch",
+  "issue_tracker": "https://github.com/adamgreenhalgh/hacs_network_switch/issues",
+  "dependencies": [],
+  "codeowners": ["@adamgreenhalgh"],
+  "requirements": ["pysnmp==6.2.6"],
+  "iot_class": "local_polling",
+  "config_flow": true
+}

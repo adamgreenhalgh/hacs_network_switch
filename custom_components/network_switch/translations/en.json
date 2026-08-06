@@ -1,0 +1,95 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure Network Switch",
+        "description": "Enter the details for your Cisco switch.",
+        "data": {
+          "host": "Host / IP address",
+          "community": "SNMP community string",
+          "port": "SNMP port",
+          "scan_interval": "Polling interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the switch. Check host, port and community string.",
+      "unknown": "Unexpected error. Check the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This switch is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Network Switch options",
+        "data": {
+          "scan_interval": "Polling interval (seconds)"
+        }
+      }
+    }
+  },
+  "services": {
+    "set_interface_admin_status": {
+      "name": "Set interface admin status",
+      "description": "Administratively enable or disable a switch interface.",
+      "fields": {
+        "entry_id": {"name": "Entry ID", "description": "Config entry ID of the switch."},
+        "if_index": {"name": "Interface index", "description": "SNMP ifIndex of the interface."},
+        "enabled": {"name": "Enabled", "description": "True to enable, False to disable."}
+      }
+    },
+    "set_interface_label": {
+      "name": "Set interface label",
+      "description": "Set the description/label (ifAlias) of a switch interface.",
+      "fields": {
+        "entry_id": {"name": "Entry ID", "description": "Config entry ID of the switch."},
+        "if_index": {"name": "Interface index", "description": "SNMP ifIndex of the interface."},
+        "label": {"name": "Label", "description": "Text description for the interface."}
+      }
+    },
+    "set_interface_access_vlan": {
+      "name": "Set access VLAN",
+      "description": "Assign an access VLAN to a switch interface.",
+      "fields": {
+        "entry_id": {"name": "Entry ID", "description": "Config entry ID of the switch."},
+        "if_index": {"name": "Interface index", "description": "SNMP ifIndex of the interface."},
+        "vlan_id": {"name": "VLAN ID", "description": "VLAN ID to assign (1-4094)."}
+      }
+    },
+    "set_interface_mode": {
+      "name": "Set interface mode",
+      "description": "Set a switch interface to access or trunk mode.",
+      "fields": {
+        "entry_id": {"name": "Entry ID", "description": "Config entry ID of the switch."},
+        "if_index": {"name": "Interface index", "description": "SNMP ifIndex of the interface."},
+        "mode": {"name": "Mode", "description": "'access' or 'trunk'."}
+      }
+    },
+    "create_vlan": {
+      "name": "Create VLAN",
+      "description": "Create a new VLAN on the switch.",
+      "fields": {
+        "entry_id": {"name": "Entry ID", "description": "Config entry ID of the switch."},
+        "vlan_id": {"name": "VLAN ID", "description": "VLAN ID to create (2-4094)."},
+        "name": {"name": "Name", "description": "Name for the VLAN."}
+      }
+    },
+    "delete_vlan": {
+      "name": "Delete VLAN",
+      "description": "Delete a VLAN from the switch.",
+      "fields": {
+        "entry_id": {"name": "Entry ID", "description": "Config entry ID of the switch."},
+        "vlan_id": {"name": "VLAN ID", "description": "VLAN ID to delete (2-4094)."}
+      }
+    },
+    "dump_mac_table": {
+      "name": "Dump MAC address table",
+      "description": "Fire a Home Assistant event containing the full MAC address table.",
+      "fields": {
+        "entry_id": {"name": "Entry ID", "description": "Config entry ID of the switch."}
+      }
+    }
+  }
+}
