@@ -70,8 +70,14 @@ class CiscoSwitchSNMP:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _transport(self) -> UdpTransportTarget | Udp6TransportTarget:
+    async def _transport(self) -> UdpTransportTarget | Udp6TransportTarget:
         transport_target = Udp6TransportTarget if ":" in self._host else UdpTransportTarget
+        if hasattr(transport_target, "create"):
+            return await transport_target.create(
+                (self._host, self._port),
+                timeout=self._timeout,
+                retries=1,
+            )
         return transport_target(
             (self._host, self._port),
             timeout=self._timeout,
@@ -116,7 +122,7 @@ class CiscoSwitchSNMP:
                 error_indication, error_status, error_index, var_binds = await getCmd(
                     engine,
                     self._community_data(),
-                    self._transport(),
+                    await self._transport(),
                     ContextData(),
                     *objects,
                 )
@@ -141,7 +147,7 @@ class CiscoSwitchSNMP:
                 async for error_indication, error_status, error_index, var_binds in bulkWalkCmd(
                     engine,
                     self._community_data(),
-                    self._transport(),
+                    await self._transport(),
                     ContextData(),
                     0,
                     25,
@@ -171,7 +177,7 @@ class CiscoSwitchSNMP:
                 error_indication, error_status, error_index, _ = await setCmd(
                     engine,
                     self._community_data(),
-                    self._transport(),
+                    await self._transport(),
                     ContextData(),
                     *objects,
                 )
