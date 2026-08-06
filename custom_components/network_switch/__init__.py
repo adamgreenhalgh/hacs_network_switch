@@ -144,10 +144,19 @@ def _get_coordinator(hass: HomeAssistant, entry_id: str) -> NetworkSwitchCoordin
 
 def _register_services(hass: HomeAssistant) -> None:
     """Register integration services (idempotent – skips if already registered)."""
-
-    if hass.services.has_service(DOMAIN, SERVICE_SET_ADMIN_STATUS) and \
-       hass.services.has_service(DOMAIN, SERVICE_DUMP_MAC_TABLE):
-        return
+    def _async_register_service(
+        service: str,
+        handler: Any,
+        schema: vol.Schema,
+    ) -> None:
+        if hass.services.has_service(DOMAIN, service):
+            return
+        hass.services.async_register(
+            DOMAIN,
+            service,
+            handler,
+            schema=schema,
+        )
 
     async def handle_set_admin_status(call: ServiceCall) -> None:
         coordinator = _get_coordinator(hass, call.data["entry_id"])
@@ -158,11 +167,10 @@ def _register_services(hass: HomeAssistant) -> None:
         )
         await coordinator.async_request_refresh()
 
-    hass.services.async_register(
-        DOMAIN,
+    _async_register_service(
         SERVICE_SET_ADMIN_STATUS,
         handle_set_admin_status,
-        schema=SET_ADMIN_STATUS_SCHEMA,
+        SET_ADMIN_STATUS_SCHEMA,
     )
 
     async def handle_set_label(call: ServiceCall) -> None:
@@ -174,11 +182,10 @@ def _register_services(hass: HomeAssistant) -> None:
         )
         await coordinator.async_request_refresh()
 
-    hass.services.async_register(
-        DOMAIN,
+    _async_register_service(
         SERVICE_SET_LABEL,
         handle_set_label,
-        schema=SET_LABEL_SCHEMA,
+        SET_LABEL_SCHEMA,
     )
 
     async def handle_set_access_vlan(call: ServiceCall) -> None:
@@ -190,11 +197,10 @@ def _register_services(hass: HomeAssistant) -> None:
         )
         await coordinator.async_request_refresh()
 
-    hass.services.async_register(
-        DOMAIN,
+    _async_register_service(
         SERVICE_SET_ACCESS_VLAN,
         handle_set_access_vlan,
-        schema=SET_ACCESS_VLAN_SCHEMA,
+        SET_ACCESS_VLAN_SCHEMA,
     )
 
     async def handle_set_interface_mode(call: ServiceCall) -> None:
@@ -206,11 +212,10 @@ def _register_services(hass: HomeAssistant) -> None:
         )
         await coordinator.async_request_refresh()
 
-    hass.services.async_register(
-        DOMAIN,
+    _async_register_service(
         SERVICE_SET_INTERFACE_MODE,
         handle_set_interface_mode,
-        schema=SET_INTERFACE_MODE_SCHEMA,
+        SET_INTERFACE_MODE_SCHEMA,
     )
 
     async def handle_create_vlan(call: ServiceCall) -> None:
@@ -218,15 +223,14 @@ def _register_services(hass: HomeAssistant) -> None:
         await hass.async_add_executor_job(
             coordinator.client.create_vlan,
             call.data["vlan_id"],
-            call.data.get("name", f"VLAN{call.data['vlan_id']}"),
+            call.data["name"] or f"VLAN{call.data['vlan_id']}",
         )
         await coordinator.async_request_refresh()
 
-    hass.services.async_register(
-        DOMAIN,
+    _async_register_service(
         SERVICE_CREATE_VLAN,
         handle_create_vlan,
-        schema=CREATE_VLAN_SCHEMA,
+        CREATE_VLAN_SCHEMA,
     )
 
     async def handle_delete_vlan(call: ServiceCall) -> None:
@@ -237,11 +241,10 @@ def _register_services(hass: HomeAssistant) -> None:
         )
         await coordinator.async_request_refresh()
 
-    hass.services.async_register(
-        DOMAIN,
+    _async_register_service(
         SERVICE_DELETE_VLAN,
         handle_delete_vlan,
-        schema=DELETE_VLAN_SCHEMA,
+        DELETE_VLAN_SCHEMA,
     )
 
     async def handle_dump_mac_table(call: ServiceCall) -> None:
@@ -256,9 +259,8 @@ def _register_services(hass: HomeAssistant) -> None:
             {"entry_id": call.data["entry_id"], "mac_table": mac_table},
         )
 
-    hass.services.async_register(
-        DOMAIN,
+    _async_register_service(
         SERVICE_DUMP_MAC_TABLE,
         handle_dump_mac_table,
-        schema=DUMP_MAC_TABLE_SCHEMA,
+        DUMP_MAC_TABLE_SCHEMA,
     )
