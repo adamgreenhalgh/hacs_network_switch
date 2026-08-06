@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from pysnmp.hlapi import (
+from pysnmp.hlapi.v3arch.sync import (
     CommunityData,
     ContextData,
     Integer,
