@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
+import socket
 import threading
 from typing import Any
 
@@ -71,21 +73,64 @@ class CiscoSwitchSNMP:
     # ------------------------------------------------------------------
 
     async def _transport(self) -> UdpTransportTarget | Udp6TransportTarget:
-        transport_target = Udp6TransportTarget if ":" in self._host else UdpTransportTarget
-        if hasattr(transport_target, "create"):
-            return await transport_target.create(
+        transport_target = await self._transport_target_class()
+        try:
+            if hasattr(transport_target, "create"):
+                try:
+                    return await transport_target.create(
+                        (self._host, self._port),
+                        timeout=self._timeout,
+                        retries=1,
+                    )
+                except NotImplementedError:
+                    _LOGGER.debug(
+                        "SNMP transport target.create() unsupported for %s, falling back",
+                        self._host,
+                    )
+
+            return transport_target(
                 (self._host, self._port),
                 timeout=self._timeout,
                 retries=1,
             )
-        return transport_target(
-            (self._host, self._port),
-            timeout=self._timeout,
-            retries=1,
-        )
+        except SNMPError:
+            raise
+        except Exception as err:
+            raise SNMPError(
+                f"Unable to create SNMP transport for {self._host}:{self._port}: {err}"
+            ) from err
 
     def _community_data(self) -> CommunityData:
         return CommunityData(self._community, mpModel=1)
+
+    async def _transport_target_class(
+        self,
+    ) -> type[UdpTransportTarget] | type[Udp6TransportTarget]:
+        """Return the best transport target class for the configured host."""
+        try:
+            address = ipaddress.ip_address(self._host)
+        except ValueError:
+            try:
+                family = (
+                    await asyncio.get_running_loop().getaddrinfo(
+                        self._host,
+                        self._port,
+                        family=socket.AF_UNSPEC,
+                        type=socket.SOCK_DGRAM,
+                    )
+                )[0][0]
+            except socket.gaierror as err:
+                raise SNMPError(
+                    f"Unable to resolve SNMP host '{self._host}': {err}"
+                ) from err
+
+            if family == socket.AF_INET6:
+                return Udp6TransportTarget
+            if family == socket.AF_INET:
+                return UdpTransportTarget
+            raise SNMPError(f"Unsupported address family for host '{self._host}'")
+
+        return Udp6TransportTarget if address.version == 6 else UdpTransportTarget
 
     def _run_coroutine(self, coroutine: Any) -> Any:
         """Run PySNMP coroutines from sync integration methods."""
@@ -133,6 +178,10 @@ class CiscoSwitchSNMP:
                         f"GET error at {error_index}: {error_status.prettyPrint()}"
                     )
                 return [(str(vb[0]), vb[1]) for vb in var_binds]
+            except SNMPError:
+                raise
+            except Exception as err:
+                raise SNMPError(f"GET error: {err}") from err
             finally:
                 engine.closeDispatcher()
 
@@ -161,6 +210,10 @@ class CiscoSwitchSNMP:
                             f"WALK error at {error_index}: {error_status.prettyPrint()}"
                         )
                     results.extend((str(var_bind[0]), var_bind[1]) for var_bind in var_binds)
+            except SNMPError:
+                raise
+            except Exception as err:
+                raise SNMPError(f"WALK error: {err}") from err
             finally:
                 engine.closeDispatcher()
 
@@ -187,6 +240,10 @@ class CiscoSwitchSNMP:
                     raise SNMPError(
                         f"SET error at {error_index}: {error_status.prettyPrint()}"
                     )
+            except SNMPError:
+                raise
+            except Exception as err:
+                raise SNMPError(f"SET error: {err}") from err
             finally:
                 engine.closeDispatcher()
 
