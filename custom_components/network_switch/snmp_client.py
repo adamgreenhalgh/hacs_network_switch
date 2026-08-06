@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
 
 from pysnmp.hlapi.asyncio import (
@@ -80,6 +81,32 @@ class CiscoSwitchSNMP:
     def _community_data(self) -> CommunityData:
         return CommunityData(self._community, mpModel=1)
 
+    def _run_coroutine(self, coroutine: Any) -> Any:
+        """Run PySNMP coroutines from sync integration methods."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coroutine)
+
+        result: Any = None
+        error: BaseException | None = None
+
+        def _runner() -> None:
+            nonlocal result, error
+            try:
+                result = asyncio.run(coroutine)
+            except BaseException as err:  # pragma: no cover - re-raised below
+                error = err
+
+        thread = threading.Thread(target=_runner)
+        thread.start()
+        thread.join()
+
+        if error is not None:
+            raise error
+
+        return result
+
     def _get(self, *oids: str) -> list[tuple[str, Any]]:
         """Perform an SNMP GET for one or more OIDs."""
         async def _get_async() -> list[tuple[str, Any]]:
@@ -93,18 +120,17 @@ class CiscoSwitchSNMP:
                     ContextData(),
                     *objects,
                 )
+                if error_indication:
+                    raise SNMPError(f"GET error: {error_indication}")
+                if error_status:
+                    raise SNMPError(
+                        f"GET error at {error_index}: {error_status.prettyPrint()}"
+                    )
+                return [(str(vb[0]), vb[1]) for vb in var_binds]
             finally:
                 engine.closeDispatcher()
 
-            if error_indication:
-                raise SNMPError(f"GET error: {error_indication}")
-            if error_status:
-                raise SNMPError(
-                    f"GET error at {error_index}: {error_status.prettyPrint()}"
-                )
-            return [(str(vb[0]), vb[1]) for vb in var_binds]
-
-        return asyncio.run(_get_async())
+        return self._run_coroutine(_get_async())
 
     def _bulk_walk(self, oid: str) -> list[tuple[str, Any]]:
         """Walk an OID subtree using BULK requests."""
@@ -134,7 +160,7 @@ class CiscoSwitchSNMP:
 
             return results
 
-        return asyncio.run(_bulk_walk_async())
+        return self._run_coroutine(_bulk_walk_async())
 
     def _set(self, *oid_value_pairs: tuple[str, Any]) -> None:
         """Perform an SNMP SET for one or more OID/value pairs."""
@@ -149,17 +175,16 @@ class CiscoSwitchSNMP:
                     ContextData(),
                     *objects,
                 )
+                if error_indication:
+                    raise SNMPError(f"SET error: {error_indication}")
+                if error_status:
+                    raise SNMPError(
+                        f"SET error at {error_index}: {error_status.prettyPrint()}"
+                    )
             finally:
                 engine.closeDispatcher()
 
-            if error_indication:
-                raise SNMPError(f"SET error: {error_indication}")
-            if error_status:
-                raise SNMPError(
-                    f"SET error at {error_index}: {error_status.prettyPrint()}"
-                )
-
-        asyncio.run(_set_async())
+        self._run_coroutine(_set_async())
 
     # ------------------------------------------------------------------
     # Interface methods
