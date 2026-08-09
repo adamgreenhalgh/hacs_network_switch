@@ -32,9 +32,8 @@ async def _validate_connection(hass: HomeAssistant, data: dict[str, Any]) -> Non
         community=data[CONF_COMMUNITY],
         port=data[CONF_PORT],
     )
-    ok = await hass.async_add_executor_job(client.test_connection)
-    if not ok:
-        raise SNMPError("Cannot connect")
+    # test_connection raises SNMPError with a descriptive message on failure.
+    await hass.async_add_executor_job(client.test_connection)
 
 
 class NetworkSwitchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -50,7 +49,8 @@ class NetworkSwitchConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             try:
                 await _validate_connection(self.hass, user_input)
-            except SNMPError:
+            except SNMPError as err:
+                _LOGGER.warning("SNMP connection test failed: %s", err)
                 errors["base"] = "cannot_connect"
             except Exception:
                 _LOGGER.exception("Unexpected error during config flow")

@@ -1,7 +1,19 @@
-"""SNMP client for Cisco 3560 switch management."""
+"""SNMP client for Cisco 3560 switch management.
+
+Transport notes
+---------------
+pysnmp's asyncio HLAPI is used here via a dedicated background thread so that
+HA's event loop is never blocked.  A *new* event loop is created in that thread
+(``asyncio.run()``) to avoid sharing loop state with Home Assistant.
+
+IPv4 is preferred over IPv6 by default (``_force_ipv4=True``).  Container
+environments (Docker bridge / macvlan) commonly only have IPv4 routes to LAN
+devices; letting the OS pick an IPv6 address causes silent timeouts even when
+the device itself is reachable on IPv4.  Pass ``force_ipv4=False`` to the
+constructor only when you need explicit IPv6.
+"""
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import logging
 import socket
@@ -23,6 +35,12 @@ from pysnmp.hlapi.asyncio import (
 from pysnmp.proto.rfc1902 import Integer, OctetString
 
 _LOGGER = logging.getLogger(__name__)
+
+# Conservative LAN defaults: 5 s timeout, 2 retries (3 total attempts).
+# CLI tools such as snmpwalk default to 1 s / 5 retries; Home Assistant
+# executor threads benefit from fewer, longer waits.
+_DEFAULT_TIMEOUT = 5   # seconds per attempt
+_DEFAULT_RETRIES = 2   # retry count (total attempts = retries + 1)
 
 # ---------------------------------------------------------------------------
 # OID constants (Cisco / standard MIBs)
@@ -62,94 +80,137 @@ class SNMPError(Exception):
 class CiscoSwitchSNMP:
     """Manage a Cisco 3560 switch via SNMP v2c."""
 
-    def __init__(self, host: str, community: str, port: int = 161, timeout: int = 5) -> None:
+    def __init__(
+        self,
+        host: str,
+        community: str,
+        port: int = 161,
+        timeout: int = _DEFAULT_TIMEOUT,
+        retries: int = _DEFAULT_RETRIES,
+        force_ipv4: bool = True,
+    ) -> None:
+        """Initialise the SNMP client.
+
+        Args:
+            host: Switch hostname or IP address.
+            community: SNMP v2c community string.
+            port: UDP port (default 161).
+            timeout: Per-attempt timeout in seconds (default 5).
+            retries: Number of retries after the first attempt (default 2).
+            force_ipv4: When True (default), DNS lookups are restricted to
+                AF_INET.  This avoids Docker bridge-network failures where the
+                host resolves to an IPv6 address that is unreachable inside the
+                container.  Set to False only when the target is explicitly
+                IPv6.
+        """
         self._host = host
         self._community = community
         self._port = port
         self._timeout = timeout
+        self._retries = retries
+        self._force_ipv4 = force_ipv4
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _transport(self) -> UdpTransportTarget | Udp6TransportTarget:
-        transport_target = await self._transport_target_class()
-        try:
-            if hasattr(transport_target, "create"):
-                try:
-                    return await transport_target.create(
-                        (self._host, self._port),
-                        timeout=self._timeout,
-                        retries=1,
-                    )
-                except NotImplementedError:
-                    _LOGGER.debug(
-                        "SNMP transport target.create() unsupported for %s, falling back",
-                        self._host,
-                    )
+    def _resolve_transport_class(self) -> tuple[type[UdpTransportTarget] | type[Udp6TransportTarget], str]:
+        """Return (transport-class, description) for the configured host.
 
-            return transport_target(
+        DNS resolution is done synchronously here because this method is always
+        called from inside a background thread (never from the HA event loop).
+
+        When *force_ipv4* is True the lookup is restricted to AF_INET, which
+        prevents inadvertent IPv6 selection in Docker environments where only
+        IPv4 routes exist to LAN switches.
+        """
+        try:
+            address = ipaddress.ip_address(self._host)
+            # Literal IP address – no DNS resolution needed.
+            if address.version == 6:
+                return Udp6TransportTarget, "IPv6"
+            return UdpTransportTarget, "IPv4"
+        except ValueError:
+            pass
+
+        # Hostname – resolve with preference for IPv4.
+        af = socket.AF_INET if self._force_ipv4 else socket.AF_UNSPEC
+        try:
+            results = socket.getaddrinfo(
+                self._host,
+                self._port,
+                family=af,
+                type=socket.SOCK_DGRAM,
+            )
+        except socket.gaierror as err:
+            raise SNMPError(
+                f"Unable to resolve SNMP host '{self._host}' "
+                f"(force_ipv4={self._force_ipv4}): {err}"
+            ) from err
+
+        if not results:
+            raise SNMPError(
+                f"No address records for SNMP host '{self._host}' "
+                f"(force_ipv4={self._force_ipv4})"
+            )
+
+        family = results[0][0]
+        if family == socket.AF_INET6:
+            return Udp6TransportTarget, "IPv6"
+        if family == socket.AF_INET:
+            return UdpTransportTarget, "IPv4"
+        raise SNMPError(
+            f"Unsupported address family {family} for SNMP host '{self._host}'"
+        )
+
+    def _build_transport(self) -> tuple[UdpTransportTarget | Udp6TransportTarget, str]:
+        """Create and return an (SNMP transport target, transport description).
+
+        Uses explicit timeout and retry values so behaviour is predictable
+        regardless of pysnmp version defaults.
+        """
+        transport_class, transport_desc = self._resolve_transport_class()
+        target_desc = f"{self._host}:{self._port} via {transport_desc}"
+        try:
+            target = transport_class(
                 (self._host, self._port),
                 timeout=self._timeout,
-                retries=1,
+                retries=self._retries,
             )
-        except SNMPError:
-            raise
+            return target, target_desc
         except Exception as err:
             raise SNMPError(
-                f"Unable to create SNMP transport for {self._host}:{self._port}: {err}"
+                f"Unable to create SNMP transport for {target_desc}: {err}"
             ) from err
 
     def _community_data(self) -> CommunityData:
         return CommunityData(self._community, mpModel=1)
 
-    async def _transport_target_class(
-        self,
-    ) -> type[UdpTransportTarget] | type[Udp6TransportTarget]:
-        """Return the best transport target class for the configured host."""
-        try:
-            address = ipaddress.ip_address(self._host)
-        except ValueError:
-            try:
-                family = (
-                    await asyncio.get_running_loop().getaddrinfo(
-                        self._host,
-                        self._port,
-                        family=socket.AF_UNSPEC,
-                        type=socket.SOCK_DGRAM,
-                    )
-                )[0][0]
-            except socket.gaierror as err:
-                raise SNMPError(
-                    f"Unable to resolve SNMP host '{self._host}': {err}"
-                ) from err
-
-            if family == socket.AF_INET6:
-                return Udp6TransportTarget
-            if family == socket.AF_INET:
-                return UdpTransportTarget
-            raise SNMPError(f"Unsupported address family for host '{self._host}'")
-
-        return Udp6TransportTarget if address.version == 6 else UdpTransportTarget
-
     def _run_coroutine(self, coroutine: Any) -> Any:
-        """Run PySNMP coroutines from sync integration methods."""
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coroutine)
+        """Execute a pysnmp coroutine in a fresh event loop on this thread.
 
+        pysnmp's asyncio HLAPI must run inside an event loop.  We always spin
+        up a *new* loop via ``asyncio.run()`` in a dedicated thread so that:
+          - HA's own event loop is never blocked or contaminated.
+          - pysnmp's transport dispatcher is fully isolated per-call.
+
+        This method is only ever invoked from within an executor thread (the
+        sync ``_get``/``_set``/``_bulk_walk`` wrappers), so we do *not* attempt
+        to detect or reuse a running loop – doing so would risk the
+        ``asyncio.run()`` "cannot be called from a running event loop" error.
+        """
         result: Any = None
         error: BaseException | None = None
 
         def _runner() -> None:
             nonlocal result, error
             try:
+                import asyncio  # noqa: PLC0415 – local import keeps top-level clean
                 result = asyncio.run(coroutine)
-            except BaseException as err:  # pragma: no cover - re-raised below
+            except BaseException as err:  # noqa: BLE001
                 error = err
 
-        thread = threading.Thread(target=_runner)
+        thread = threading.Thread(target=_runner, daemon=True)
         thread.start()
         thread.join()
 
@@ -161,27 +222,37 @@ class CiscoSwitchSNMP:
     def _get(self, *oids: str) -> list[tuple[str, Any]]:
         """Perform an SNMP GET for one or more OIDs."""
         async def _get_async() -> list[tuple[str, Any]]:
+            import asyncio  # noqa: PLC0415
             objects = [ObjectType(ObjectIdentity(oid)) for oid in oids]
+            # Build transport inside the async function so the loop is active.
+            transport, target_desc = await asyncio.get_event_loop().run_in_executor(
+                None, self._build_transport
+            )
             engine = SnmpEngine()
             try:
                 error_indication, error_status, error_index, var_binds = await getCmd(
                     engine,
                     self._community_data(),
-                    await self._transport(),
+                    transport,
                     ContextData(),
                     *objects,
                 )
                 if error_indication:
-                    raise SNMPError(f"GET error: {error_indication}")
+                    raise SNMPError(
+                        f"SNMP GET failed for {target_desc}: {error_indication}"
+                    )
                 if error_status:
                     raise SNMPError(
-                        f"GET error at {error_index}: {error_status.prettyPrint()}"
+                        f"SNMP GET error at index {error_index} for {target_desc}: "
+                        f"{error_status.prettyPrint()}"
                     )
                 return [(str(vb[0]), vb[1]) for vb in var_binds]
             except SNMPError:
                 raise
             except Exception as err:
-                raise SNMPError(f"GET error: {err}") from err
+                raise SNMPError(
+                    f"SNMP GET unexpected error for {target_desc}: {err}"
+                ) from err
             finally:
                 engine.closeDispatcher()
 
@@ -190,13 +261,17 @@ class CiscoSwitchSNMP:
     def _bulk_walk(self, oid: str) -> list[tuple[str, Any]]:
         """Walk an OID subtree using BULK requests."""
         async def _bulk_walk_async() -> list[tuple[str, Any]]:
+            import asyncio  # noqa: PLC0415
+            transport, target_desc = await asyncio.get_event_loop().run_in_executor(
+                None, self._build_transport
+            )
             engine = SnmpEngine()
             results: list[tuple[str, Any]] = []
             try:
                 async for error_indication, error_status, error_index, var_binds in bulkWalkCmd(
                     engine,
                     self._community_data(),
-                    await self._transport(),
+                    transport,
                     ContextData(),
                     0,
                     25,
@@ -204,16 +279,21 @@ class CiscoSwitchSNMP:
                     lexicographicMode=False,
                 ):
                     if error_indication:
-                        raise SNMPError(f"WALK error: {error_indication}")
+                        raise SNMPError(
+                            f"SNMP WALK failed for {target_desc}: {error_indication}"
+                        )
                     if error_status:
                         raise SNMPError(
-                            f"WALK error at {error_index}: {error_status.prettyPrint()}"
+                            f"SNMP WALK error at index {error_index} for {target_desc}: "
+                            f"{error_status.prettyPrint()}"
                         )
-                    results.extend((str(var_bind[0]), var_bind[1]) for var_bind in var_binds)
+                    results.extend((str(vb[0]), vb[1]) for vb in var_binds)
             except SNMPError:
                 raise
             except Exception as err:
-                raise SNMPError(f"WALK error: {err}") from err
+                raise SNMPError(
+                    f"SNMP WALK unexpected error for {target_desc}: {err}"
+                ) from err
             finally:
                 engine.closeDispatcher()
 
@@ -224,26 +304,35 @@ class CiscoSwitchSNMP:
     def _set(self, *oid_value_pairs: tuple[str, Any]) -> None:
         """Perform an SNMP SET for one or more OID/value pairs."""
         async def _set_async() -> None:
+            import asyncio  # noqa: PLC0415
             objects = [ObjectType(ObjectIdentity(oid), value) for oid, value in oid_value_pairs]
+            transport, target_desc = await asyncio.get_event_loop().run_in_executor(
+                None, self._build_transport
+            )
             engine = SnmpEngine()
             try:
                 error_indication, error_status, error_index, _ = await setCmd(
                     engine,
                     self._community_data(),
-                    await self._transport(),
+                    transport,
                     ContextData(),
                     *objects,
                 )
                 if error_indication:
-                    raise SNMPError(f"SET error: {error_indication}")
+                    raise SNMPError(
+                        f"SNMP SET failed for {target_desc}: {error_indication}"
+                    )
                 if error_status:
                     raise SNMPError(
-                        f"SET error at {error_index}: {error_status.prettyPrint()}"
+                        f"SNMP SET error at index {error_index} for {target_desc}: "
+                        f"{error_status.prettyPrint()}"
                     )
             except SNMPError:
                 raise
             except Exception as err:
-                raise SNMPError(f"SET error: {err}") from err
+                raise SNMPError(
+                    f"SNMP SET unexpected error for {target_desc}: {err}"
+                ) from err
             finally:
                 engine.closeDispatcher()
 
@@ -389,10 +478,12 @@ class CiscoSwitchSNMP:
     # Connectivity test
     # ------------------------------------------------------------------
 
-    def test_connection(self) -> bool:
-        """Return True if the switch responds to SNMP."""
-        try:
-            self._get("1.3.6.1.2.1.1.1.0")  # sysDescr
-            return True
-        except SNMPError:
-            return False
+    def test_connection(self) -> None:
+        """Verify the switch responds to SNMP.
+
+        Raises :class:`SNMPError` with a descriptive message on failure so
+        that callers (e.g. config flow) can surface actionable diagnostics to
+        the user instead of a generic "cannot connect" message.
+        """
+        # sysDescr (1.3.6.1.2.1.1.1.0) is universally available on v2c agents.
+        self._get("1.3.6.1.2.1.1.1.0")
