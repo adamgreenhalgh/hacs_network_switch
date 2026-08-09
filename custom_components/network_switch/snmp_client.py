@@ -163,16 +163,18 @@ class CiscoSwitchSNMP:
             f"Unsupported address family {family} for SNMP host '{self._host}'"
         )
 
-    def _build_transport(self) -> tuple[UdpTransportTarget | Udp6TransportTarget, str]:
+    async def _build_transport(self) -> tuple[UdpTransportTarget | Udp6TransportTarget, str]:
         """Create and return an (SNMP transport target, transport description).
 
-        Uses explicit timeout and retry values so behaviour is predictable
+        Uses the async ``create`` classmethod introduced in pysnmp 7.x so that
+        the transport address is not confused with the ``timeout`` parameter.
+        Explicit timeout and retry values are passed so behaviour is predictable
         regardless of pysnmp version defaults.
         """
         transport_class, transport_desc = self._resolve_transport_class()
         target_desc = f"{self._host}:{self._port} via {transport_desc}"
         try:
-            target = transport_class(
+            target = await transport_class.create(
                 (self._host, self._port),
                 timeout=self._timeout,
                 retries=self._retries,
@@ -222,12 +224,8 @@ class CiscoSwitchSNMP:
     def _get(self, *oids: str) -> list[tuple[str, Any]]:
         """Perform an SNMP GET for one or more OIDs."""
         async def _get_async() -> list[tuple[str, Any]]:
-            import asyncio  # noqa: PLC0415
             objects = [ObjectType(ObjectIdentity(oid)) for oid in oids]
-            # Build transport inside the async function so the loop is active.
-            transport, target_desc = await asyncio.get_event_loop().run_in_executor(
-                None, self._build_transport
-            )
+            transport, target_desc = await self._build_transport()
             engine = SnmpEngine()
             try:
                 error_indication, error_status, error_index, var_binds = await getCmd(
@@ -261,10 +259,7 @@ class CiscoSwitchSNMP:
     def _bulk_walk(self, oid: str) -> list[tuple[str, Any]]:
         """Walk an OID subtree using BULK requests."""
         async def _bulk_walk_async() -> list[tuple[str, Any]]:
-            import asyncio  # noqa: PLC0415
-            transport, target_desc = await asyncio.get_event_loop().run_in_executor(
-                None, self._build_transport
-            )
+            transport, target_desc = await self._build_transport()
             engine = SnmpEngine()
             results: list[tuple[str, Any]] = []
             try:
@@ -304,11 +299,8 @@ class CiscoSwitchSNMP:
     def _set(self, *oid_value_pairs: tuple[str, Any]) -> None:
         """Perform an SNMP SET for one or more OID/value pairs."""
         async def _set_async() -> None:
-            import asyncio  # noqa: PLC0415
             objects = [ObjectType(ObjectIdentity(oid), value) for oid, value in oid_value_pairs]
-            transport, target_desc = await asyncio.get_event_loop().run_in_executor(
-                None, self._build_transport
-            )
+            transport, target_desc = await self._build_transport()
             engine = SnmpEngine()
             try:
                 error_indication, error_status, error_index, _ = await setCmd(
